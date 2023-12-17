@@ -7,13 +7,15 @@ import (
 	"time"
 )
 
+// 定义依赖于外部系统的方法，例如数据库请求
 type runFunc func() error
+
+// 定义服务中断期间执行的方法
 type fallbackFunc func(error) error
 type runFuncC func(context.Context) error
 type fallbackFuncC func(context.Context, error) error
 
-// A CircuitError is an error which models various failure states of execution,
-// such as the circuit being open or a timeout.
+// CircuitError 自定义熔断器错误
 type CircuitError struct {
 	Message string
 }
@@ -22,36 +24,31 @@ func (e CircuitError) Error() string {
 	return "hystrix: " + e.Message
 }
 
-// command models the state used for a single execution on a circuit. "hystrix command" is commonly
-// used to describe the pairing of your run/fallback functions with a circuit.
+// command 代表了熔断器中单次执行的状态，通常用 "hystrix command" 来描述与熔断器配对的 run/fallback 函数。
 type command struct {
 	sync.Mutex
 
-	ticket      *struct{}
-	start       time.Time
-	errChan     chan error
-	finished    chan bool
-	circuit     *CircuitBreaker
-	run         runFuncC
-	fallback    fallbackFuncC
-	runDuration time.Duration
-	events      []string
+	ticket      *struct{}       // 代表从令牌桶中取出的一个令牌
+	start       time.Time       // command 执行开始时间
+	errChan     chan error      // command 执行错误
+	finished    chan bool       // command 执行结束
+	circuit     *CircuitBreaker // 熔断器对象
+	run         runFuncC        // 应用程序
+	fallback    fallbackFuncC   // 应用程序执行失败时的回调函数
+	runDuration time.Duration   // 执行 run 函数的时长
+	events      []string        // 存储事件类型信息
 }
 
 var (
-	// ErrMaxConcurrency occurs when too many of the same named command are executed at the same time.
+	// ErrMaxConcurrency 达到最大并发量
 	ErrMaxConcurrency = CircuitError{Message: "max concurrency"}
-	// ErrCircuitOpen returns when an execution attempt "short circuits". This happens due to the circuit being measured as unhealthy.
+	// ErrCircuitOpen 熔断器打开状态
 	ErrCircuitOpen = CircuitError{Message: "circuit open"}
-	// ErrTimeout occurs when the provided function takes too long to execute.
+	// ErrTimeout run 方法执行超时
 	ErrTimeout = CircuitError{Message: "timeout"}
 )
 
-// Go runs your function while tracking the health of previous calls to it.
-// If your function begins slowing down or failing repeatedly, we will block
-// new calls to it for you to give the dependent service time to repair.
-//
-// Define a fallback function if you want to define some code to execute during outages.
+// Go 异步调用 run 方法，实际上是调用 GoC
 func Go(name string, run runFunc, fallback fallbackFunc) chan error {
 	runC := func(ctx context.Context) error {
 		return run()
@@ -62,15 +59,13 @@ func Go(name string, run runFunc, fallback fallbackFunc) chan error {
 			return fallback(err)
 		}
 	}
+	// 实际上是加上 context 调用 GoC
 	return GoC(context.Background(), name, runC, fallbackC)
 }
 
-// GoC runs your function while tracking the health of previous calls to it.
-// If your function begins slowing down or failing repeatedly, we will block
-// new calls to it for you to give the dependent service time to repair.
-//
-// Define a fallback function if you want to define some code to execute during outages.
+// GoC 异步调用 run 方法
 func GoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC) chan error {
+	// 对于每个调用：实例化 command 对象
 	cmd := &command{
 		run:      run,
 		fallback: fallback,
@@ -83,29 +78,30 @@ func GoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 	// let data come in and out naturally, like with any closure
 	// explicit error return to give place for us to kill switch the operation (fallback)
 
+	// 根据 name 获取熔断器对象
 	circuit, _, err := GetCircuit(name)
 	if err != nil {
 		cmd.errChan <- err
 		return cmd.errChan
 	}
 	cmd.circuit = circuit
+	// 使用 cmd 内部的锁初始化 Cond
 	ticketCond := sync.NewCond(cmd)
 	ticketChecked := false
-	// When the caller extracts error from returned errChan, it's assumed that
-	// the ticket's been returned to executorPool. Therefore, returnTicket() can
-	// not run after cmd.errorWithFallback().
+	// 将令牌还到令牌桶中
 	returnTicket := func() {
 		cmd.Lock()
-		// Avoid releasing before a ticket is acquired.
+		// 避免在令牌被取出之前释放令牌。
 		for !ticketChecked {
+			// 陷入阻塞
 			ticketCond.Wait()
 		}
+		// 归还令牌
 		cmd.circuit.executorPool.Return(cmd.ticket)
 		cmd.Unlock()
 	}
-	// Shared by the following two goroutines. It ensures only the faster
-	// goroutine runs errWithFallback() and reportAllEvent().
 	returnOnce := &sync.Once{}
+	// 上报状态事件
 	reportAllEvent := func() {
 		err := cmd.circuit.ReportEvent(cmd.events, cmd.start, cmd.runDuration)
 		if err != nil {
@@ -113,21 +109,26 @@ func GoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 		}
 	}
 
+	// 执行 run
 	go func() {
+		// 并发控制
 		defer func() { cmd.finished <- true }()
 
-		// Circuits get opened when recent executions have shown to have a high error rate.
-		// Rejecting new executions allows backends to recover, and the circuit will allow
-		// new traffic when it feels a healthly state has returned.
+		// 根据熔断器状态判断不执行该请求
 		if !cmd.circuit.AllowRequest() {
 			cmd.Lock()
-			// It's safe for another goroutine to go ahead releasing a nil ticket.
+			// 此时根本没获取到令牌，为了保持一致性，依然选择归还令牌
+			// 在归还令牌处兼容令牌为 nil 的场景
 			ticketChecked = true
+			// 通知释放令牌信息
 			ticketCond.Signal()
 			cmd.Unlock()
 			returnOnce.Do(func() {
+				// 归还令牌
 				returnTicket()
+				// 执行 fallback
 				cmd.errorWithFallback(ctx, ErrCircuitOpen)
+				// 上报状态事件
 				reportAllEvent()
 			})
 			return
@@ -140,51 +141,60 @@ func GoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 		// shed load which accumulates due to the increasing ratio of active commands to incoming requests.
 		cmd.Lock()
 		select {
-		case cmd.ticket = <-circuit.executorPool.Tickets:
+		case cmd.ticket = <-circuit.executorPool.Tickets: // 能从令牌桶中成功获取到令牌，放行该请求
 			ticketChecked = true
 			ticketCond.Signal()
 			cmd.Unlock()
-		default:
+		default: // 不能从令牌桶中获取到令牌，达到最大并发数量，执行 fallback
 			ticketChecked = true
 			ticketCond.Signal()
 			cmd.Unlock()
 			returnOnce.Do(func() {
+				// 归还令牌
 				returnTicket()
+				// 达到最大并发数，执行 fallback
 				cmd.errorWithFallback(ctx, ErrMaxConcurrency)
 				reportAllEvent()
 			})
 			return
 		}
 
+		// 成功拿到令牌，执行 run
 		runStart := time.Now()
 		runErr := run(ctx)
 		returnOnce.Do(func() {
 			defer reportAllEvent()
+			// 统计 run 执行时间
 			cmd.runDuration = time.Since(runStart)
+			// 归还令牌
 			returnTicket()
 			if runErr != nil {
+				// 如果应用程序执行失败执行fallback函数
 				cmd.errorWithFallback(ctx, runErr)
 				return
 			}
+			// 追加 "success" 事件
 			cmd.reportEvent("success")
 		})
 	}()
 
 	go func() {
+		// 启动定时器进行超时控制，默认 1 s
 		timer := time.NewTimer(getSettings(name).Timeout)
 		defer timer.Stop()
 
 		select {
+		// 前面执行 run 的协程成功执行完成（不论是否成功）
 		case <-cmd.finished:
 			// returnOnce has been executed in another goroutine
-		case <-ctx.Done():
+		case <-ctx.Done(): // context 取消
 			returnOnce.Do(func() {
 				returnTicket()
 				cmd.errorWithFallback(ctx, ctx.Err())
 				reportAllEvent()
 			})
 			return
-		case <-timer.C:
+		case <-timer.C: // cmd 超时
 			returnOnce.Do(func() {
 				returnTicket()
 				cmd.errorWithFallback(ctx, ErrTimeout)
@@ -197,8 +207,7 @@ func GoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 	return cmd.errChan
 }
 
-// Do runs your function in a synchronous manner, blocking until either your function succeeds
-// or an error is returned, including hystrix circuit errors
+// Do 同步调用 run 方法，实际上是调用 GoC
 func Do(name string, run runFunc, fallback fallbackFunc) error {
 	runC := func(ctx context.Context) error {
 		return run()
@@ -209,11 +218,11 @@ func Do(name string, run runFunc, fallback fallbackFunc) error {
 			return fallback(err)
 		}
 	}
+	// 实际上是加上 context 调用 DoC
 	return DoC(context.Background(), name, runC, fallbackC)
 }
 
-// DoC runs your function in a synchronous manner, blocking until either your function succeeds
-// or an error is returned, including hystrix circuit errors
+// DoC 同步调用 run 方法，实际上是调用 GoC
 func DoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC) error {
 	done := make(chan struct{}, 1)
 
@@ -223,6 +232,7 @@ func DoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 			return err
 		}
 
+		// 异步转同步，通知上层
 		done <- struct{}{}
 		return nil
 	}
@@ -237,6 +247,7 @@ func DoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 		return nil
 	}
 
+	// 调用 GoC
 	var errChan chan error
 	if fallback == nil {
 		errChan = GoC(ctx, name, r, nil)
@@ -244,6 +255,7 @@ func DoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 		errChan = GoC(ctx, name, r, f)
 	}
 
+	// 等待执行完成或报错，再返回
 	select {
 	case <-done:
 		return nil
@@ -252,6 +264,7 @@ func DoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 	}
 }
 
+// 线程安全地将 eventType 追加到 events 中
 func (c *command) reportEvent(eventType string) {
 	c.Lock()
 	defer c.Unlock()
@@ -259,34 +272,38 @@ func (c *command) reportEvent(eventType string) {
 	c.events = append(c.events, eventType)
 }
 
-// errorWithFallback triggers the fallback while reporting the appropriate metric events.
+// errorWithFallback 根据错误类型触发 fallback，并记录相应的 metric 事件
 func (c *command) errorWithFallback(ctx context.Context, err error) {
 	eventType := "failure"
-	if err == ErrCircuitOpen {
+	if err == ErrCircuitOpen { // 熔断器打开状态
 		eventType = "short-circuit"
-	} else if err == ErrMaxConcurrency {
+	} else if err == ErrMaxConcurrency { // 最大并发数
 		eventType = "rejected"
-	} else if err == ErrTimeout {
+	} else if err == ErrTimeout { // 超时
 		eventType = "timeout"
-	} else if err == context.Canceled {
+	} else if err == context.Canceled { // context 取消
 		eventType = "context_canceled"
-	} else if err == context.DeadlineExceeded {
+	} else if err == context.DeadlineExceeded { // context 超时
 		eventType = "context_deadline_exceeded"
 	}
 
+	// 追加到 events 中
 	c.reportEvent(eventType)
+	// 尝试执行 fallback
 	fallbackErr := c.tryFallback(ctx, err)
 	if fallbackErr != nil {
-		c.errChan <- fallbackErr
+		c.errChan <- fallbackErr // 将错误写回 errChan，返回给实际的 GoC 调用方
 	}
 }
 
+// 尝试执行 fallback，如果成功执行 fallback，返回 nil
 func (c *command) tryFallback(ctx context.Context, err error) error {
 	if c.fallback == nil {
-		// If we don't have a fallback return the original error.
+		// 如果没有定义 fallback，则直接返回错误
 		return err
 	}
 
+	// 执行 fallback
 	fallbackErr := c.fallback(ctx, err)
 	if fallbackErr != nil {
 		c.reportEvent("fallback-failure")

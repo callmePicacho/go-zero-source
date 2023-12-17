@@ -130,21 +130,27 @@ func (m *metricExchange) requestsLocked() *rolling.Number {
 	return m.DefaultCollector().NumRequests()
 }
 
+// ErrorPercent 计算错误率
 func (m *metricExchange) ErrorPercent(now time.Time) int {
 	m.Mutex.RLock()
 	defer m.Mutex.RUnlock()
 
 	var errPct float64
+	// 请求总数
 	reqs := m.requestsLocked().Sum(now)
+	// 请求错误总数
 	errs := m.DefaultCollector().Errors().Sum(now)
 
 	if reqs > 0 {
+		// 计算错误率
 		errPct = (float64(errs) / float64(reqs)) * 100
 	}
 
+	// 四舍五入
 	return int(errPct + 0.5)
 }
 
+// IsHealthy 检查错误率是否超过设置阈值
 func (m *metricExchange) IsHealthy(now time.Time) bool {
 	return m.ErrorPercent(now) < getSettings(m.Name).ErrorPercentThreshold
 }
