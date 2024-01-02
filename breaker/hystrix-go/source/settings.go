@@ -23,7 +23,7 @@ var (
 type Settings struct {
 	Timeout                time.Duration // 命令执行超时时间
 	MaxConcurrentRequests  int           // 最大并发数
-	RequestVolumeThreshold uint64        // 能触发熔断器打开的最小请求数
+	RequestVolumeThreshold uint64        // 能触发熔断器打开的最小请求数，统计的时间周期是10s
 	SleepWindow            time.Duration // 熔断器打开后，多久之后可以进入半打开状态
 	ErrorPercentThreshold  int           // 导致熔断器打开的错误百分比
 }

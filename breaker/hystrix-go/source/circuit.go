@@ -23,9 +23,11 @@ type CircuitBreaker struct {
 
 var (
 	circuitBreakersMutex *sync.RWMutex
-	circuitBreakers      map[string]*CircuitBreaker // 全局熔断器map，存储全部熔断器对象
+	// 全局熔断器map，存储全部熔断器对象
+	circuitBreakers map[string]*CircuitBreaker
 )
 
+// 使用 init 饿汉式初始化全局map
 func init() {
 	circuitBreakersMutex = &sync.RWMutex{}
 	circuitBreakers = make(map[string]*CircuitBreaker)
@@ -67,6 +69,7 @@ func Flush() {
 		cb.metrics.Reset()
 		// 清除令牌桶监控数据
 		cb.executorPool.Metrics.Reset()
+		// 从全局map中移除
 		delete(circuitBreakers, name)
 	}
 }
@@ -192,6 +195,7 @@ func (circuit *CircuitBreaker) ReportEvent(eventTypes []string, start time.Time,
 	circuit.mutex.RUnlock()
 	// 上报的状态事件是 success，且当前熔断器是开启状态，则说明下游服务正常了，可以关闭熔断器了
 	if eventTypes[0] == "success" && o {
+		// 关闭熔断器
 		circuit.setClose()
 	}
 
