@@ -111,7 +111,7 @@ func GoC(ctx context.Context, name string, run runFuncC, fallback fallbackFuncC)
 
 	// 执行 run
 	go func() {
-		// 并发控制
+		// 同步
 		defer func() { cmd.finished <- true }()
 
 		// 根据熔断器状态判断不执行该请求
