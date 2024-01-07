@@ -131,6 +131,7 @@ func WithName(name string) Option {
 	}
 }
 
+// 默认的 Acceptable 函数，判断 err 是否为 nil
 func defaultAcceptable(err error) bool {
 	return err == nil
 }
@@ -149,6 +150,7 @@ func newLoggedThrottle(name string, t internalThrottle) loggedThrottle {
 	}
 }
 
+// 判断是否触发熔断
 func (lt loggedThrottle) allow() (Promise, error) {
 	promise, err := lt.internalThrottle.allow()
 	return promiseWithReason{
@@ -168,6 +170,7 @@ func (lt loggedThrottle) doReq(req func() error, fallback func(err error) error,
 }
 
 func (lt loggedThrottle) logError(err error) error {
+	// 如果是熔断打开错误
 	if errors.Is(err, ErrServiceUnavailable) {
 		// if circuit open, not possible to have empty error window
 		stat.Report(fmt.Sprintf(

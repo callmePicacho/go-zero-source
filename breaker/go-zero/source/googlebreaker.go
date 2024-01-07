@@ -58,6 +58,7 @@ func (b *googleBreaker) accept() error {
 }
 
 func (b *googleBreaker) allow() (internalPromise, error) {
+	// 判断是否触发熔断
 	if err := b.accept(); err != nil {
 		return nil, err
 	}

@@ -3,7 +3,8 @@ package breaker
 import "sync"
 
 var (
-	lock     sync.RWMutex
+	lock sync.RWMutex
+	// 存储全部熔断器的对象
 	breakers = make(map[string]Breaker)
 )
 
