@@ -8,9 +8,9 @@ type (
 	// ChunkOption defines the method to customize a ChunkExecutor.
 	ChunkOption func(options *chunkOptions)
 
-	// A ChunkExecutor is an executor to execute tasks when either requirement meets:
-	// 1. up to given chunk size
-	// 2. flush interval elapsed
+	// ChunkExecutor 是一个执行器，满足以下条件执行任务：
+	// 1. 达到给定大小
+	// 2. 经过间隔的刷新时间
 	ChunkExecutor struct {
 		executor  *PeriodicalExecutor
 		container *chunkContainer
@@ -24,6 +24,7 @@ type (
 
 // NewChunkExecutor returns a ChunkExecutor.
 func NewChunkExecutor(execute Execute, opts ...ChunkOption) *ChunkExecutor {
+	// 默认配置项
 	options := newChunkOptions()
 	for _, opt := range opts {
 		opt(&options)
@@ -76,11 +77,12 @@ func WithFlushInterval(duration time.Duration) ChunkOption {
 
 func newChunkOptions() chunkOptions {
 	return chunkOptions{
-		chunkSize:     defaultChunkSize,
-		flushInterval: defaultFlushInterval,
+		chunkSize:     defaultChunkSize,     // 默认 1M
+		flushInterval: defaultFlushInterval, // 默认 1s
 	}
 }
 
+// 达到最大字节数提交的 container
 type chunkContainer struct {
 	tasks        []any
 	execute      Execute
@@ -88,6 +90,7 @@ type chunkContainer struct {
 	maxChunkSize int
 }
 
+// AddTask 添加任务，就是 size，如果 size 大于 maxChunkSize，则返回 true
 func (bc *chunkContainer) AddTask(task any) bool {
 	ck := task.(chunk)
 	bc.tasks = append(bc.tasks, ck.val)
@@ -95,11 +98,13 @@ func (bc *chunkContainer) AddTask(task any) bool {
 	return bc.size >= bc.maxChunkSize
 }
 
+// Execute 执行任务
 func (bc *chunkContainer) Execute(tasks any) {
 	vals := tasks.([]any)
 	bc.execute(vals)
 }
 
+// RemoveAll 移除 tasks，并返回 tasks
 func (bc *chunkContainer) RemoveAll() any {
 	tasks := bc.tasks
 	bc.tasks = nil

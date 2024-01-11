@@ -18,7 +18,7 @@ const idleRound = 10
 type (
 	// TaskContainer 接口定义了一个可以作为执行器的底层容器，用于周期性执行任务。
 	TaskContainer interface {
-		// AddTask 将 task 加入容器中
+		// AddTask 将 task 加入容器中，当返回 true 时，调用 Execute
 		AddTask(task any) bool
 		// Execute 执行 tasks
 		Execute(tasks any)
@@ -26,7 +26,7 @@ type (
 		RemoveAll() any
 	}
 
-	// PeriodicalExecutor 用于周期性执行任务。
+	// PeriodicalExecutor 用于周期性执行任务
 	PeriodicalExecutor struct {
 		commander   chan any                  // 用于传递 tasks 的 chan
 		interval    time.Duration             // 周期性间隔
@@ -44,7 +44,7 @@ type (
 	}
 )
 
-// NewPeriodicalExecutor returns a PeriodicalExecutor with given interval and container.
+// NewPeriodicalExecutor 间隔时间执行一次刷新
 func NewPeriodicalExecutor(interval time.Duration, container TaskContainer) *PeriodicalExecutor {
 	executor := &PeriodicalExecutor{
 		// buffer 1 to let the caller go quickly
@@ -67,7 +67,8 @@ func NewPeriodicalExecutor(interval time.Duration, container TaskContainer) *Per
 // Add 加入 task
 func (pe *PeriodicalExecutor) Add(task any) {
 	if vals, ok := pe.addAndCheck(task); ok {
-		// vals 是全部的 task 列表
+		// vals 是从 RemoveAll 方法取出的 tasks，将全部 tasks 通过 commander 传递
+		// 接收是在 backgroundFlush 方法中
 		pe.commander <- vals
 		// 阻塞等待放行
 		<-pe.confirmChan
@@ -78,6 +79,7 @@ func (pe *PeriodicalExecutor) Add(task any) {
 func (pe *PeriodicalExecutor) Flush() bool {
 	// 本质：wg.Add(1)
 	pe.enterExecution()
+	// 匿名函数，相当于将 RemoveAll 执行结果作为参数传递
 	return pe.executeTasks(func() any {
 		pe.lock.Lock()
 		defer pe.lock.Unlock()
@@ -104,24 +106,30 @@ func (pe *PeriodicalExecutor) Wait() {
 func (pe *PeriodicalExecutor) addAndCheck(task any) (any, bool) {
 	pe.lock.Lock()
 	defer func() {
+		// 允许一个协程去启动 backgroundFlush
 		if !pe.guarded {
+			// 进入后置 true，防止其他协程再次启动
 			pe.guarded = true
-			// defer to unlock quickly
+			// 这里使用 defer 是为了快速执行 Unlock
+			// backgroundFlush 后台协程刷新 task
 			defer pe.backgroundFlush()
 		}
 		pe.lock.Unlock()
 	}()
 
-	// 将 task 添加到容器中，根据返回值判断是否需要执行 task
+	// 实际调用的是使用方实现的 AddTask 方法
+	// 将 task 添加到容器中，如果返回 true，将全部 tasks 取出
 	if pe.container.AddTask(task) {
 		atomic.AddInt32(&pe.inflight, 1)
-		// 移除并返回全部的 task
+		// 实际调用的是使用方实现的 RemoveAll 方法
+		// 移除并返回全部的 tasks
 		return pe.container.RemoveAll(), true
 	}
 
 	return nil, false
 }
 
+// 后台执行 task，同一时间仅执行一个
 func (pe *PeriodicalExecutor) backgroundFlush() {
 	go func() {
 		// 返回前再次刷新，防止丢失 task
@@ -145,6 +153,7 @@ func (pe *PeriodicalExecutor) backgroundFlush() {
 				pe.executeTasks(vals)
 				last = timex.Now()
 			case <-ticker.Chan(): // interval 间隔执行一次
+				// 如果在这个间隔时间内，已经执行了上面 select 的分支，此时不需要此次执行，直接置反返回
 				if commanded {
 					commanded = false
 				} else if pe.Flush() { // 强制执行 task
@@ -157,10 +166,15 @@ func (pe *PeriodicalExecutor) backgroundFlush() {
 	}()
 }
 
+// wg.Done() 的场景：
+// 1. 执行完成 Execute 方法后执行
 func (pe *PeriodicalExecutor) doneExecution() {
 	pe.waitGroup.Done()
 }
 
+// wg.Add(1) 的场景：
+// 1. 刷新时存在任务，需要执行
+// 2. task 执行 AddTask 时返回了 true，将全部任务通过 channel 传递给 backgroundFlush 执行前
 func (pe *PeriodicalExecutor) enterExecution() {
 	pe.wgBarrier.Guard(func() {
 		pe.waitGroup.Add(1)
@@ -171,11 +185,13 @@ func (pe *PeriodicalExecutor) executeTasks(tasks any) bool {
 	// 本质：wg.Done()
 	defer pe.doneExecution()
 
-	// 简单判断使用有 task
+	// 判断是否有 task
 	ok := pe.hasTasks(tasks)
+	// 只有有 task，就执行 Execute 方法
 	if ok {
+		// 同步调用
 		threading.RunSafe(func() {
-			// 执行接口定义的 Execute 方法
+			// 实际调用的是使用方实现的 Execute 方法
 			pe.container.Execute(tasks)
 		})
 	}

@@ -8,22 +8,23 @@ type (
 	// BulkOption defines the method to customize a BulkExecutor.
 	BulkOption func(options *bulkOptions)
 
-	// A BulkExecutor is an executor that can execute tasks on either requirement meets:
-	// 1. up to given size of tasks
-	// 2. flush interval time elapsed
+	// BulkExecutor 是一个执行器，可以按照以下条件执行任务：
+	// 1. 达到给定大小的任务数
+	// 2. 经过间隔的刷新时间
 	BulkExecutor struct {
 		executor  *PeriodicalExecutor
 		container *bulkContainer
 	}
 
 	bulkOptions struct {
-		cachedTasks   int
-		flushInterval time.Duration
+		cachedTasks   int           // 最大任务数
+		flushInterval time.Duration // 间隔刷新时间
 	}
 )
 
 // NewBulkExecutor returns a BulkExecutor.
 func NewBulkExecutor(execute Execute, opts ...BulkOption) *BulkExecutor {
+	// 创建默认值
 	options := newBulkOptions()
 	for _, opt := range opts {
 		opt(&options)
@@ -33,9 +34,10 @@ func NewBulkExecutor(execute Execute, opts ...BulkOption) *BulkExecutor {
 		execute:  execute,
 		maxTasks: options.cachedTasks,
 	}
+
 	executor := &BulkExecutor{
-		executor:  NewPeriodicalExecutor(options.flushInterval, container),
-		container: container,
+		executor:  NewPeriodicalExecutor(options.flushInterval, container), // 使用底层定时刷新的 executor
+		container: container,                                               // 使用达到最大任务数提交的 container
 	}
 
 	return executor
@@ -71,29 +73,34 @@ func WithBulkInterval(duration time.Duration) BulkOption {
 	}
 }
 
+// TaskContainer 接口的实现类
 func newBulkOptions() bulkOptions {
 	return bulkOptions{
-		cachedTasks:   defaultBulkTasks,
-		flushInterval: defaultFlushInterval,
+		cachedTasks:   defaultBulkTasks,     // 默认任务数：1000
+		flushInterval: defaultFlushInterval, // 默认刷新间隔：1s
 	}
 }
 
+// 达到最大任务数提交的 container
 type bulkContainer struct {
 	tasks    []any
 	execute  Execute
 	maxTasks int
 }
 
+// AddTask 将任务添加到 tasks 中，达到最大任务数时，返回 true
 func (bc *bulkContainer) AddTask(task any) bool {
 	bc.tasks = append(bc.tasks, task)
 	return len(bc.tasks) >= bc.maxTasks
 }
 
+// Execute 执行任务
 func (bc *bulkContainer) Execute(tasks any) {
 	vals := tasks.([]any)
 	bc.execute(vals)
 }
 
+// RemoveAll 移除 tasks，并返回 tasks
 func (bc *bulkContainer) RemoveAll() any {
 	tasks := bc.tasks
 	bc.tasks = nil
