@@ -37,6 +37,7 @@ type (
 		// +1 时机：当 Add task 返回 true 时，+1后执行RemoveAll()，获取 tasks 写入 channel
 		// -1 时机：后台 goroutine 通过 channel 获取到 tasks 时
 		// 判等0时机：当多轮时间间隔都无 task 时，决定是否需要退出 backgroundFlush
+		// 存在的意义：确保在执行器退出时，确保所有任务都执行完成（TODO）
 		inflight  int32                                     // 用来判断是否可以退出当前 backgroundFlush
 		guarded   bool                                      // 为 false 时，允许启动 backgroundFlush
 		newTicker func(duration time.Duration) timex.Ticker // 时间间隔器
@@ -135,30 +136,38 @@ func (pe *PeriodicalExecutor) backgroundFlush() {
 		// 返回前再次刷新，防止丢失 task
 		defer pe.Flush()
 
+		// 创建一个时间间隔器，用于 interval 间隔执行一次
 		ticker := pe.newTicker(pe.interval)
 		defer ticker.Stop()
 
+		// 用途：当同时满足两个 select 分支时，可能存在这样的场景：
+		// 1. select case 执行 commander 获取到 tasks 后，置为 true
+		// 2. 下次执行定时器的 case，跳过定时器中的执行
+		// 疑问：为什么只跳过定时器的 case，而没有跳过 commander 的 case
+		// 猜测：commander 的 case 中肯定是全部的 tasks，而定时器中的 case 则不一定，为了积攒更多的 tasks 一次执行，所以选择跳过
 		var commanded bool
+		// 记录最近执行时间，当 10 次间隔时间都没有新 task 产生，考虑退出该 backgroundFlush
 		last := timex.Now()
 		for {
 			select {
+			// 当 Add 返回 true，获取到全部 tasks，传入该 channel
 			case vals := <-pe.commander: // 从 channel 拿到 []task
 				commanded = true
 				atomic.AddInt32(&pe.inflight, -1)
 				// 本质：执行 wg.Add(1)
 				pe.enterExecution()
-				// 放开 Add 的阻塞
+				// 放开 Add 的阻塞，使得 Add 在 task 执行时不会被阻塞
 				pe.confirmChan <- lang.Placeholder
 				// 开始真正执行 task
 				pe.executeTasks(vals)
 				last = timex.Now()
 			case <-ticker.Chan(): // interval 间隔执行一次
-				// 如果在这个间隔时间内，已经执行了上面 select 的分支，此时不需要此次执行，直接置反返回
+				// 置反跳过本次执行
 				if commanded {
 					commanded = false
 				} else if pe.Flush() { // 强制执行 task
 					last = timex.Now()
-				} else if pe.shallQuit(last) {
+				} else if pe.shallQuit(last) { // 定时器本轮中没有新 task，会执行到该分支
 					return
 				}
 			}
@@ -215,11 +224,13 @@ func (pe *PeriodicalExecutor) hasTasks(tasks any) bool {
 }
 
 func (pe *PeriodicalExecutor) shallQuit(last time.Duration) (stop bool) {
+	// 如果10次间隔时间，都没有 task，该考虑退出 backgroundFlush
 	if timex.Since(last) <= pe.interval*idleRound {
 		return
 	}
 
 	// checking pe.inflight and setting pe.guarded should be locked together
+	// TODO
 	pe.lock.Lock()
 	if atomic.LoadInt32(&pe.inflight) == 0 {
 		// 只有这里置为 false，才会开启新的 pe.backgroundFlush

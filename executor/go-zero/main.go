@@ -21,7 +21,7 @@ func newInsertTask(execute executors.Execute) *InsertTask {
 // AddTask 将任务添加到容器中，并返回一个布尔值来指示是否需要在添加后刷新容器
 func (i *InsertTask) AddTask(task any) bool {
 	i.tasks = append(i.tasks, task)
-	return len(i.tasks) >= 10
+	return len(i.tasks) >= 3
 }
 
 // Execute 刷新容器时处理收集的任务
@@ -65,6 +65,7 @@ func test2() {
 		for _, task := range tasks {
 			fmt.Println(task)
 		}
+		time.Sleep(time.Second)
 	}
 
 	exec := executors.NewPeriodicalExecutor(time.Second, newInsertTask(execute))
