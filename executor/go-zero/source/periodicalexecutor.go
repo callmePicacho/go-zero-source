@@ -34,10 +34,7 @@ type (
 		waitGroup   sync.WaitGroup            // 用于等待任务执行完成
 		wgBarrier   syncx.Barrier             // 避免 waitGroup 的竞态
 		confirmChan chan lang.PlaceholderType // 阻塞 Add()，避免 wg.Wait() 在 wg.Add(1) 前进行
-		// +1 时机：当 Add task 返回 true 时，+1后执行RemoveAll()，获取 tasks 写入 channel
-		// -1 时机：后台 goroutine 通过 channel 获取到 tasks 时
-		// 判等0时机：当多轮时间间隔都无 task 时，决定是否需要退出 backgroundFlush
-		// 存在的意义：确保在执行器退出时，确保所有任务都执行完成（TODO）
+		// 存在的意义：确保执行 pe.commander <- vals 时，backgroundFlush 未退出
 		inflight  int32                                     // 用来判断是否可以退出当前 backgroundFlush
 		guarded   bool                                      // 为 false 时，允许启动 backgroundFlush
 		newTicker func(duration time.Duration) timex.Ticker // 时间间隔器
@@ -175,15 +172,14 @@ func (pe *PeriodicalExecutor) backgroundFlush() {
 	}()
 }
 
-// wg.Done() 的场景：
-// 1. 执行完成 Execute 方法后执行
+// 本质：wg.Done()
+// 使用场景：executeTasks 执行完成后
 func (pe *PeriodicalExecutor) doneExecution() {
 	pe.waitGroup.Done()
 }
 
-// wg.Add(1) 的场景：
-// 1. 刷新时存在任务，需要执行
-// 2. task 执行 AddTask 时返回了 true，将全部任务通过 channel 传递给 backgroundFlush 执行前
+// 本质：wg.Add(1)
+// 使用场景：executeTasks 前，可能是 Flush 中，也可能是 backgroundFlush 中，所以需要加单独的锁
 func (pe *PeriodicalExecutor) enterExecution() {
 	pe.wgBarrier.Guard(func() {
 		pe.waitGroup.Add(1)
@@ -230,11 +226,12 @@ func (pe *PeriodicalExecutor) shallQuit(last time.Duration) (stop bool) {
 	}
 
 	// checking pe.inflight and setting pe.guarded should be locked together
-	// TODO
 	pe.lock.Lock()
+	// 确保成功执行 pe.commander <- vals
 	if atomic.LoadInt32(&pe.inflight) == 0 {
 		// 只有这里置为 false，才会开启新的 pe.backgroundFlush
 		pe.guarded = false
+		// 只有这里置为 true，才会结束该 pe.backgroundFlush
 		stop = true
 	}
 	pe.lock.Unlock()

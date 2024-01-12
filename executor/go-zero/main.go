@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/zeromicro/go-zero/core/executors"
+	"go-zero-source/executor/go-zero/source"
 	"math/rand"
 	"time"
 )
