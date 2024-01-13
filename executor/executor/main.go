@@ -2,16 +2,17 @@ package main
 
 import (
 	"fmt"
-	"go-zero-source/executor/executor/source"
+	"go-zero-source/executor/executor/source/v1"
+	"go-zero-source/executor/executor/source/v2"
 	"time"
 )
 
 type InsertTask struct {
 	tasks   []any
-	execute source.Execute
+	execute v1.Execute
 }
 
-func newInsertTask(execute source.Execute) *InsertTask {
+func newInsertTask(execute v1.Execute) *InsertTask {
 	return &InsertTask{
 		execute: execute,
 	}
@@ -37,6 +38,10 @@ func (i *InsertTask) RemoveAll() any {
 }
 
 func main() {
+	testv2()
+}
+
+func testv1() {
 	execute := func(tasks []any) {
 		fmt.Println("执行了")
 		for _, task := range tasks {
@@ -45,11 +50,32 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
-	exec := source.NewPeriodicalExecutor(time.Second, newInsertTask(execute))
+	exec := v1.NewPeriodicalExecutor(time.Second, newInsertTask(execute))
 
 	for i := 10; i < 19; i++ {
 		exec.Add(i)
 	}
 
+	// 可能导致任务未执行退出
 	exec.Flush()
+}
+
+func testv2() {
+	execute := func(tasks []any) {
+		fmt.Println("执行了")
+		for _, task := range tasks {
+			fmt.Println(task)
+		}
+		time.Sleep(time.Second)
+		fmt.Println("执行完成")
+	}
+
+	exec := v2.NewPeriodicalExecutor(time.Second, newInsertTask(execute))
+
+	defer exec.Wait()
+
+	for i := 10; i < 19; i++ {
+		exec.Add(i)
+	}
+
 }

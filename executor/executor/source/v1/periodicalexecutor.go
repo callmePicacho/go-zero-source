@@ -1,4 +1,4 @@
-package source
+package v1
 
 import (
 	"sync"
@@ -7,6 +7,7 @@ import (
 
 /*
 基础版本，只提供 Add 和 Flush 功能
+缺陷：当 backgroundFlush 中拿到任务 Execute，可能业务主线程执行完成退出，需要添加 Wait 等待执行完成
 */
 
 type (
