@@ -10,6 +10,7 @@ import (
 /*
 在 v1 的基础上增加 Wait，确保 backgroundFlush 中执行完成才退出
 需要使用 waitGroup，确保 Execute 执行完成才退出
+本版本的问题：backgroundFlush 不会退出，如果整个PeriodicalExecutor，会导致 backgroundFlush 泄露
 */
 
 type (
