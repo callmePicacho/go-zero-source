@@ -62,9 +62,6 @@ func (h *ConsistentHash) Add(node any) {
 	h.AddWithReplicas(node, h.replicas)
 }
 
-// AddWithReplicas adds the node with the number of replicas,
-// replicas will be truncated to h.replicas if it's larger than h.replicas,
-// the later call will overwrite the replicas of the former calls.
 // AddWithReplicas 添加真实节点
 func (h *ConsistentHash) AddWithReplicas(node any, replicas int) {
 	// 支持重复添加
@@ -167,6 +164,7 @@ func (h *ConsistentHash) Remove(node any) {
 		h.removeRingNode(hash, nodeRepr)
 	}
 
+	// 删除真实节点
 	h.removeNode(nodeRepr)
 }
 
@@ -182,7 +180,7 @@ func (h *ConsistentHash) removeRingNode(hash uint64, nodeRepr string) {
 				newNodes = append(newNodes, x)
 			}
 		}
-		// 如果虚拟节点还有对应的真实节点，使用新真实节点列表作为映射的 value
+		// 如果虚拟节点还有对应的其他真实节点，使用新真实节点列表作为映射的 value
 		if len(newNodes) > 0 {
 			h.ring[hash] = newNodes
 		} else { // 否则直接删掉整个映射
