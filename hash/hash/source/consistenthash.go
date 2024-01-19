@@ -1,21 +1,13 @@
 package source
 
-import "sync"
+import "strconv"
 
 const (
 	minReplicas = 100
 )
 
 type (
-	HashFunc func(data []byte) uint64
-
-	// HashRing 哈希环接口
-	HashRing interface {
-		// AddNode 添加节点到哈希环
-		AddNode(node any)
-		// RemoveNode 从哈希环中删除节点
-		RemoveNode(node any)
-	}
+	HashFunc func(data []byte) string
 
 	// ConsistentHash 一致性哈希实现
 	ConsistentHash struct {
@@ -26,27 +18,84 @@ type (
 )
 
 // NewConsistentHash 使用默认参数创建一致性哈希实例
-func NewConsistentHash() *ConsistentHash {
-	//return NewCustomConsistentHash(minReplicas, repr)
-	panic(nil)
-}
-
-func NewCustomConsistentHash(hashRing HashRing, hashFunc HashFunc, replicas int) *ConsistentHash {
-	panic(nil)
-}
-
-// SliceHashRing 使用Slice实现HashRing接口
-type SliceHashRing struct {
-	keys  []uint64            // 虚拟节点列表
-	ring  map[uint64][]any    // 虚拟节点到真实节点的映射
-	nodes map[string]struct{} // 真实节点map
-	lock  sync.RWMutex
-}
-
-func NewSliceHashRing() *SliceHashRing {
-	return &SliceHashRing{
-		keys:  make([]uint64, 0),
-		ring:  make(map[uint64][]any),
-		nodes: make(map[string]struct{}),
+func NewConsistentHash(hashRing HashRing, hashFunc HashFunc, replicas int) *ConsistentHash {
+	if hashRing == nil {
+		hashRing = NewSliceHashRing() // 使用默认的hashRing
 	}
+
+	if hashFunc == nil {
+		hashFunc = Hash
+	}
+
+	if replicas < minReplicas {
+		replicas = minReplicas
+	}
+
+	return &ConsistentHash{
+		hashRing: hashRing,
+		hashFunc: hashFunc,
+		replicas: replicas,
+	}
+}
+
+// Add 添加真实节点
+func (h *ConsistentHash) Add(node string) {
+	// 支持重复添加
+	// 先删除该真实节点
+	h.Remove(node)
+
+	// 加锁
+	h.hashRing.Lock()
+	defer h.hashRing.UnLock()
+
+	for i := 0; i < h.replicas; i++ {
+		// 计算虚拟节点的哈希值
+		virtualNode := h.hashFunc([]byte(node + strconv.Itoa(i)))
+		// 添加虚拟节点
+		h.hashRing.AddVirtualNode(node, virtualNode)
+	}
+
+	// 添加真实节点
+	h.hashRing.AddNode(node)
+}
+
+// Remove 删除真实节点
+func (h *ConsistentHash) Remove(node string) {
+	// 加锁
+	h.hashRing.Lock()
+	defer h.hashRing.UnLock()
+
+	// 检查节点是否存在哈希环中，不存在直接返回
+	if !h.hashRing.ContainsNode(node) {
+		return
+	}
+
+	for i := 0; i < h.replicas; i++ {
+		// 计算虚拟节点的哈希值
+		virtualNode := h.hashFunc([]byte(node + strconv.Itoa(i)))
+		// 删除虚拟节点
+		h.hashRing.RemoveVirtualNode(node, virtualNode)
+	}
+
+	// 删除真实节点
+	h.hashRing.RemoveNode(node)
+}
+
+// Get 查询节点，最终返回具体的真实节点
+func (h *ConsistentHash) Get(key string) (string, bool) {
+	// 加锁
+	h.hashRing.Lock()
+	defer h.hashRing.UnLock()
+
+	// 计算key的哈希值
+	hash := h.hashFunc([]byte(key))
+
+	// 获取对应的虚拟节点
+	virtualNode, ok := h.hashRing.GetVirtualNode(hash)
+	if !ok {
+		return "", false
+	}
+
+	// 根据虚拟节点获取对应的真实节点
+	return h.hashRing.GetNode(virtualNode)
 }
