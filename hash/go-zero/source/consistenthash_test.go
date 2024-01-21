@@ -14,6 +14,7 @@ const (
 	requestSize = 1000
 )
 
+// BenchmarkConsistentHashGet-4     3496914               335.0 ns/op
 func BenchmarkConsistentHashGet(b *testing.B) {
 	ch := NewConsistentHash()
 	for i := 0; i < keySize; i++ {
