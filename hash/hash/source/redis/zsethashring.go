@@ -26,6 +26,9 @@ type ZSetHashRing struct {
 func NewZSetHashRing(key, addr, passwd string) *ZSetHashRing {
 	client := redis.NewClient(&redis.Options{Addr: addr, Password: passwd})
 
+	// 删除 key
+	_ = client.Del(context.Background(), key).Err()
+
 	return &ZSetHashRing{
 		key:    key,
 		client: client,
@@ -66,10 +69,7 @@ func (z *ZSetHashRing) AddNode(node string, virtualNode uint64, idx int) error {
 	// 存在冲突，把已经存在的节点删掉
 	if len(entities) == 1 {
 		// 先反序列化为切片
-		err = json.Unmarshal([]byte(entities[0]), &members)
-		if err != nil {
-			return err
-		}
+		members = z.UnmarshalEntries(entities)
 
 		// 已有该节点，返回
 		for _, member := range members {
@@ -79,7 +79,7 @@ func (z *ZSetHashRing) AddNode(node string, virtualNode uint64, idx int) error {
 		}
 
 		// 删除当前节点
-		err = z.client.ZRem(context.Background(), z.key, rawNodeKey).Err()
+		err = z.client.ZRemRangeByScore(context.Background(), z.key, score, score).Err()
 		if err != nil {
 			return fmt.Errorf("redis ring add fail, err: %w", err)
 		}
@@ -87,7 +87,7 @@ func (z *ZSetHashRing) AddNode(node string, virtualNode uint64, idx int) error {
 
 	// 追加最新节点
 	members = append(members, rawNodeKey)
-	entitiesBytes, _ := json.Marshal(members)
+	entitiesBytes := z.MarshalEntries(members)
 	return z.client.ZAdd(context.Background(), z.key, &redis.Z{Score: float64(virtualNode), Member: entitiesBytes}).Err()
 }
 
@@ -108,11 +108,7 @@ func (z *ZSetHashRing) RemoveNode(node string, virtualNode uint64, idx int) erro
 		return fmt.Errorf("invalid score entity len: %d", len(entities))
 	}
 
-	var members []string
-	err = json.Unmarshal([]byte(entities[0]), &members)
-	if err != nil {
-		return err
-	}
+	members := z.UnmarshalEntries(entities)
 
 	// 判断虚拟节点中是否存在对应的真实节点
 	index := -1
@@ -132,13 +128,18 @@ func (z *ZSetHashRing) RemoveNode(node string, virtualNode uint64, idx int) erro
 	members = append(members[:index], members[index+1:]...)
 
 	// 删除整个元素
-	err = z.client.ZRem(context.Background(), z.key, rawNodeKey).Err()
+	err = z.client.ZRemRangeByScore(context.Background(), z.key, score, score).Err()
 	if err != nil {
 		return fmt.Errorf("redis ring add fail, err: %w", err)
 	}
 
+	// 如果已经空了，不必再添加
+	if len(members) == 0 {
+		return nil
+	}
+
 	// 新建元素
-	entitiesBytes, _ := json.Marshal(members)
+	entitiesBytes := z.MarshalEntries(members)
 	return z.client.ZAdd(context.Background(), z.key, &redis.Z{Score: float64(virtualNode), Member: entitiesBytes}).Err()
 }
 
@@ -146,7 +147,8 @@ func (z *ZSetHashRing) RemoveNode(node string, virtualNode uint64, idx int) erro
 func (z *ZSetHashRing) ContainsNode(node string) bool {
 	// 使用第一个去尝试看是否存在
 	rawNodeKey := z.getRawNodeKey(node, 0)
-	err := z.client.ZScore(context.Background(), z.key, rawNodeKey).Err()
+	entitiesBytes := z.MarshalEntries([]string{rawNodeKey})
+	err := z.client.ZScore(context.Background(), z.key, string(entitiesBytes)).Err()
 	return !errors.Is(err, redis.Nil)
 }
 
@@ -180,12 +182,12 @@ func (z *ZSetHashRing) getVirtualNode(hash uint64) ([]string, bool) {
 
 	// 首先找 [hash, +inf] 区间内的第一个节点
 	entries, err := z.client.ZRangeByScore(context.Background(), z.key, zrangeBy).Result()
-	if err != nil {
-		if !errors.Is(err, redis.Nil) {
-			return nil, false
-		}
-	} else {
-		goto end
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return nil, false
+	}
+
+	if len(entries) != 0 {
+		return z.UnmarshalEntries(entries), true
 	}
 
 	// 如果没找到，反过来找 [-inf, hash] 区间的第一个节点
@@ -193,18 +195,27 @@ func (z *ZSetHashRing) getVirtualNode(hash uint64) ([]string, bool) {
 	zrangeBy.Min = "-inf"
 
 	entries, err = z.client.ZRangeByScore(context.Background(), z.key, zrangeBy).Result()
-	if err != nil || len(entries) == 0 {
+	if err != nil && !errors.Is(err, redis.Nil) || len(entries) == 0 {
 		return nil, false
 	}
 
-end:
+	return z.UnmarshalEntries(entries), true
+}
+
+func (z *ZSetHashRing) MarshalEntries(members []string) []byte {
+	entriesBytes, _ := json.Marshal(members)
+
+	return entriesBytes
+}
+
+func (z *ZSetHashRing) UnmarshalEntries(entries []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+
 	var members []string
-	err = json.Unmarshal([]byte(entries[0]), &members)
-	if err != nil {
-		return nil, false
-	}
-
-	return members, true
+	_ = json.Unmarshal([]byte(entries[0]), &members)
+	return members
 }
 
 // getRawNodeKey 为真实节点node添加后缀，区分不同节点

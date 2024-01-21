@@ -9,17 +9,30 @@ import (
 )
 
 const (
-	keySize     = 20
-	requestSize = 1000
+	keySize = 20
 )
 
-// BenchmarkConsistentHashGet-4     4611037               260.9 ns/op
+// BenchmarkConsistentHashGet-16            4849216               208.8 ns/op
 func BenchmarkConsistentHashGet(b *testing.B) {
 	ch := NewConsistentHash()
 	for i := 0; i < keySize; i++ {
 		ch.Add("localhost:" + strconv.Itoa(i))
 	}
 
+	for i := 0; i < b.N; i++ {
+		ch.Get(strconv.Itoa(i))
+	}
+}
+
+// BenchmarkConsistentHashRedisGet-16           603           3138432 ns/op
+func BenchmarkConsistentHashRedisGet(b *testing.B) {
+	redisCh := redis.NewZSetHashRing("BenchmarkConsistentHashRedisGet", "localhost:6379", "")
+	ch := NewCustomConsistentHash(redisCh, redis.Hash, minReplicas)
+	for i := 0; i < keySize; i++ {
+		ch.Add("localhost:" + strconv.Itoa(i))
+	}
+
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ch.Get(strconv.Itoa(i))
 	}
