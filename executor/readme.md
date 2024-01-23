@@ -1,3 +1,4 @@
+[源码地址](https://github.com/callmePicacho/go-zero-source/tree/main/executor)
 ## 介绍
 在性能优化中，存在这样一种优化的手段：批处理，例如任务单独插入，每次需要和数据库交互，可以转为使用批量插入，这样可以减少数据库的交互次数，提高性能。
 在 go-zero 中，executors 就是实现批处理的工具，充当任务池，做多任务缓冲。
@@ -371,21 +372,6 @@ func (pe *PeriodicalExecutor) doneExecution() {
 
 当一段间隔时间（10次）内都没有新任务添加，且当前没有任务正在执行，可以考虑退出后台任务循环，以防止无谓的空闲循环占用资源，当有任务再添加时，重新启动该后台协程
 
-参考：
+## 参考
 [https://www.bookstack.cn/read/go-zero-1.3-zh/executors.md](https://www.bookstack.cn/read/go-zero-1.3-zh/executors.md)
 [https://draveness.me/golang/docs/part2-foundation/ch05-keyword/golang-select/](https://draveness.me/golang/docs/part2-foundation/ch05-keyword/golang-select/)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

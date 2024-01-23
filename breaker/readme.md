@@ -1,4 +1,5 @@
 ## 为什么需要熔断器
+[源码地址](https://github.com/callmePicacho/go-zero-source/tree/main/breaker)
 ### 雪崩效应
 在微服务中，各种服务互相依赖。
 比如评论服务依赖审核服务，审核服务依赖反垃圾服务，当评论服务调用审核服务时，审核服务又调用反垃圾服务，这时如果反垃圾服务超时了，由于审核服务依赖反垃圾服务，反垃圾服务的超时会导致审核服务逻辑一直等待，而这时评论服务又一直在调用审核服务，审核服务对反垃圾服务的调用会占用越来越多的资源，审核服务就有可能因为堆积了大量请求而导致服务宕机，进而引起崩溃，导致"雪崩效应"。
@@ -548,7 +549,7 @@ func (p googlePromise) Reject() {
 
 ```
 
-参考：  
+## 参考 
 [https://zhuanlan.zhihu.com/p/369772129](https://zhuanlan.zhihu.com/p/369772129)
 [https://juejin.cn/post/7028536954262126605](https://juejin.cn/post/7028536954262126605#heading-11)
 [https://github.com/skyhackvip/service_breaker](https://github.com/skyhackvip/service_breaker)
@@ -557,6 +558,3 @@ func (p googlePromise) Reject() {
 [https://github.com/sony/gobreaker](https://github.com/sony/gobreaker)
 [https://juejin.cn/post/7004802597332713503](https://juejin.cn/post/7004802597332713503#heading-17)
 [https://github.com/afex/hystrix-go](https://github.com/afex/hystrix-go)
-
-
-

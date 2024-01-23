@@ -1,3 +1,4 @@
+[源码地址](https://github.com/callmePicacho/go-zero-source/tree/main/bloom)
 ## 为什么需要布隆过滤器
 在一些场景中，需要快速判断某元素是否在集合中，例如：
 
